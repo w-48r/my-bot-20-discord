@@ -3,15 +3,26 @@ require("dotenv").config();
 const {
   Client,
   GatewayIntentBits,
-  ChannelType
+  ChannelType,
+  REST,
+  Routes,
+  SlashCommandBuilder
 } = require("discord.js");
 
 const {
   joinVoiceChannel,
-  getVoiceConnection
+  getVoiceConnection,
+  VoiceConnectionStatus
 } = require("@discordjs/voice");
 
+
+// ==================================================
+// الإعدادات
+// ==================================================
+
 const GUILD_ID = "1362808759495299252";
+
+const MAX_BOTS = 17;
 
 const CHANNELS = {
   1: "1539040980966052011",
@@ -30,16 +41,27 @@ const CHANNELS = {
   14: "1544179940461641769",
   15: "1544179992936714320",
   16: "1556015627565797517",
-  17: "1556015651972186293",
-  18: "1556015673006759977",
-  19: "1556015694519468152",
-  20: "1556015714618310780"
+  17: "1556015651972186293"
 };
 
+
+// ==================================================
+// تخزين البوتات
+// ==================================================
+
 const bots = [];
+
+const shouldStay = new Set();
+
 const joining = new Set();
 
+
+// ==================================================
+// إنشاء البوت
+// ==================================================
+
 function createBot(index) {
+
   const token = process.env[`BOT_TOKEN_${index}`];
 
   if (!token) {
@@ -54,200 +76,671 @@ function createBot(index) {
     ]
   });
 
-  client.once("ready", () => {
-    console.log(`✅ البوت ${index} دخل: ${client.user.tag}`);
+
+  // ----------------------------------------------
+  // جاهز
+  // ----------------------------------------------
+
+  client.once("clientReady", () => {
+
+    console.log(
+      `✅ البوت ${index} جاهز: ${client.user.tag}`
+    );
+
   });
+
+
+  // ----------------------------------------------
+  // مراقبة خروج البوت من الروم
+  // ----------------------------------------------
 
   client.on("voiceStateUpdate", async (oldState, newState) => {
-    // إذا البوت انطرد أو خرج من الروم، رجعه لرومه
-    if (!client.user) return;
 
-    if (oldState.member?.id !== client.user.id) return;
-
-    const targetChannel = CHANNELS[index];
-
-    if (!targetChannel) return;
-
-    if (!newState.channelId) {
-      setTimeout(() => {
-        joinBot(index);
-      }, 3000);
+    if (!client.user) {
+      return;
     }
+
+    if (oldState.id !== client.user.id) {
+      return;
+    }
+
+    // البوت خرج من الروم
+    if (
+      oldState.channelId &&
+      !newState.channelId &&
+      shouldStay.has(index)
+    ) {
+
+      console.log(
+        `⚠️ البوت ${index} خرج من الروم`
+      );
+
+      setTimeout(() => {
+
+        if (shouldStay.has(index)) {
+          joinBot(index);
+        }
+
+      }, 5000);
+
+    }
+
   });
 
-  client.login(token).catch((err) => {
-    console.log(`❌ فشل تسجيل دخول البوت ${index}:`, err.message);
+
+  // ----------------------------------------------
+  // تسجيل الدخول
+  // ----------------------------------------------
+
+  client.login(token).catch((error) => {
+
+    console.log(
+      `❌ فشل تسجيل دخول البوت ${index}: ${error.message}`
+    );
+
   });
+
 
   return client;
 }
 
-for (let i = 1; i <= 20; i++) {
+
+// ==================================================
+// تشغيل البوتات 1 - 17
+// ==================================================
+
+for (let i = 1; i <= MAX_BOTS; i++) {
+
   const bot = createBot(i);
 
   if (bot) {
     bots[i] = bot;
   }
+
 }
 
+
+// ==================================================
+// دخول البوت للروم
+// ==================================================
+
 async function joinBot(index) {
-  if (joining.has(index)) return;
+
+  if (joining.has(index)) {
+    return false;
+  }
 
   const client = bots[index];
+
   const channelId = CHANNELS[index];
 
-  if (!client || !client.isReady()) {
-    console.log(`❌ البوت ${index} غير جاهز`);
+  if (!client) {
+
+    console.log(
+      `❌ البوت ${index} غير موجود`
+    );
+
+    return false;
+  }
+
+  if (!client.isReady()) {
+
+    console.log(
+      `❌ البوت ${index} غير جاهز`
+    );
+
     return false;
   }
 
   joining.add(index);
 
   try {
+
     const guild = await client.guilds.fetch(GUILD_ID);
+
     const channel = await guild.channels.fetch(channelId);
 
+
+    // ----------------------------------------------
+    // التأكد من الروم
+    // ----------------------------------------------
+
     if (!channel) {
-      console.log(`❌ البوت ${index}: الروم غير موجود`);
+
+      console.log(
+        `❌ روم البوت ${index} غير موجود`
+      );
+
       return false;
     }
+
 
     if (
       channel.type !== ChannelType.GuildVoice &&
       channel.type !== ChannelType.GuildStageVoice
     ) {
-      console.log(`❌ البوت ${index}: هذا ليس روم صوتي`);
+
+      console.log(
+        `❌ روم البوت ${index} ليس رومًا صوتيًا`
+      );
+
       return false;
     }
 
-    const oldConnection = getVoiceConnection(GUILD_ID, index);
+
+    // ----------------------------------------------
+    // نخلي البوت يرجع إذا خرج
+    // ----------------------------------------------
+
+    shouldStay.add(index);
+
+
+    // ----------------------------------------------
+    // اتصال مستقل لكل بوت
+    // ----------------------------------------------
+
+    const group = `AUREX_BOT_${index}`;
+
+
+    // إذا عنده اتصال قديم، نحذفه
+    const oldConnection = getVoiceConnection(
+      GUILD_ID,
+      group
+    );
 
     if (oldConnection) {
       oldConnection.destroy();
     }
 
-    joinVoiceChannel({
+
+    // ----------------------------------------------
+    // دخول الروم
+    // ----------------------------------------------
+
+    const connection = joinVoiceChannel({
+
       channelId: channel.id,
+
       guildId: GUILD_ID,
+
       adapterCreator: guild.voiceAdapterCreator,
+
       selfDeaf: false,
-      selfMute: false
+
+      selfMute: false,
+
+      group: group
+
     });
 
-    console.log(`🎧 البوت ${index} دخل الروم`);
+
+    console.log(
+      `🎧 البوت ${index} دخل الروم`
+    );
+
+
+    // ----------------------------------------------
+    // إذا انقطع الاتصال
+    // ----------------------------------------------
+
+    connection.on(
+      VoiceConnectionStatus.Disconnected,
+      () => {
+
+        if (!shouldStay.has(index)) {
+          return;
+        }
+
+        console.log(
+          `⚠️ اتصال البوت ${index} انقطع`
+        );
+
+        setTimeout(() => {
+
+          if (shouldStay.has(index)) {
+            joinBot(index);
+          }
+
+        }, 5000);
+
+      }
+    );
+
 
     return true;
+
   } catch (error) {
-    console.log(`❌ خطأ في دخول البوت ${index}:`, error.message);
+
+    console.log(
+      `❌ خطأ في دخول البوت ${index}: ${error.message}`
+    );
+
     return false;
+
   } finally {
+
     joining.delete(index);
+
   }
+
 }
 
+
+// ==================================================
+// إخراج البوت
+// ==================================================
+
 async function leaveBot(index) {
+
   const client = bots[index];
 
-  if (!client || !client.isReady()) {
-    console.log(`❌ البوت ${index} غير جاهز`);
+  if (!client) {
     return false;
   }
 
-  try {
-    const guild = await client.guilds.fetch(GUILD_ID);
 
-    const connection = getVoiceConnection(GUILD_ID, index);
+  // يمنع الإرجاع التلقائي
+  shouldStay.delete(index);
+
+
+  try {
+
+    const group = `AUREX_BOT_${index}`;
+
+
+    const connection = getVoiceConnection(
+      GUILD_ID,
+      group
+    );
+
 
     if (connection) {
       connection.destroy();
     }
 
-    const me = guild.members.me;
 
-    if (me && me.voice.channelId) {
-      await me.voice.disconnect().catch(() => {});
-    }
+    console.log(
+      `🚪 البوت ${index} خرج من الروم`
+    );
 
-    console.log(`🚪 البوت ${index} خرج من الروم`);
 
     return true;
+
   } catch (error) {
-    console.log(`❌ خطأ في إخراج البوت ${index}:`, error.message);
+
+    console.log(
+      `❌ خطأ في إخراج البوت ${index}: ${error.message}`
+    );
+
     return false;
+
   }
+
 }
 
-// ===============================
-// أوامر البوت رقم 1
-// ===============================
+
+// ==================================================
+// إنشاء أوامر Discord
+// ==================================================
+
+function buildCommands() {
+
+  const commands = [];
+
+
+  for (let i = 1; i <= MAX_BOTS; i++) {
+
+    commands.push(
+
+      new SlashCommandBuilder()
+        .setName(`join${i}`)
+        .setDescription(`إدخال البوت ${i} إلى الروم`)
+
+        .toJSON(),
+
+      new SlashCommandBuilder()
+        .setName(`leave${i}`)
+        .setDescription(`إخراج البوت ${i} من الروم`)
+
+        .toJSON()
+
+    );
+
+  }
+
+
+  return commands;
+}
+
+
+// ==================================================
+// تسجيل الأوامر
+// ==================================================
+
+async function registerCommands() {
+
+  const commandClient = bots[1];
+
+  if (!commandClient) {
+
+    console.log(
+      "❌ البوت 1 غير موجود، لا يمكن تسجيل الأوامر"
+    );
+
+    return;
+
+  }
+
+
+  // ننتظر حتى يصبح البوت 1 جاهزًا
+  if (!commandClient.isReady()) {
+
+    await new Promise((resolve) => {
+
+      commandClient.once(
+        "clientReady",
+        resolve
+      );
+
+    });
+
+  }
+
+
+  try {
+
+    console.log("");
+    console.log("=================================");
+    console.log("📡 فحص أوامر Discord...");
+    console.log("=================================");
+
+
+    const guild = await commandClient.guilds.fetch(
+      GUILD_ID
+    );
+
+
+    const existingCommands =
+      await guild.commands.fetch();
+
+
+    const commands = buildCommands();
+
+
+    // ----------------------------------------------
+    // نسجل فقط الأوامر الناقصة
+    // ----------------------------------------------
+
+    for (const command of commands) {
+
+      const exists = existingCommands.find(
+        (existing) =>
+          existing.name === command.name
+      );
+
+
+      if (exists) {
+
+        console.log(
+          `☑️ موجود: /${command.name}`
+        );
+
+        continue;
+
+      }
+
+
+      console.log(
+        `➕ جاري إضافة /${command.name}...`
+      );
+
+
+      await guild.commands.create(command);
+
+
+      console.log(
+        `✅ تمت إضافة /${command.name}`
+      );
+
+
+      // تأخير بسيط حتى لا نضغط API
+      await new Promise((resolve) =>
+        setTimeout(resolve, 500)
+      );
+
+    }
+
+
+    console.log("");
+    console.log("=================================");
+    console.log("✅ انتهى تسجيل الأوامر");
+    console.log("=================================");
+    console.log("🎧 /join1 إلى /join17");
+    console.log("🚪 /leave1 إلى /leave17");
+    console.log("=================================");
+    console.log("");
+
+  } catch (error) {
+
+    console.log("");
+    console.log(
+      `❌ خطأ في تسجيل الأوامر: ${error.message}`
+    );
+    console.log("");
+
+  }
+
+}
+
+
+// ==================================================
+// أوامر التفاعل
+// ==================================================
 
 const commandClient = bots[1];
 
+
 if (commandClient) {
-  commandClient.on("interactionCreate", async (interaction) => {
-    if (!interaction.isChatInputCommand()) return;
 
-    const command = interaction.commandName;
+  commandClient.on(
+    "interactionCreate",
+    async (interaction) => {
 
-    const joinMatch = command.match(/^join(1|2|3|4|5|6|7|8|9|10|11|12|13|14|15|16|17|18|19|20)$/);
-    const leaveMatch = command.match(/^leave(1|2|3|4|5|6|7|8|9|10|11|12|13|14|15|16|17|18|19|20)$/);
-
-    try {
-      if (joinMatch) {
-        const index = Number(joinMatch[1]);
-
-        await interaction.reply({
-          content: `⏳ جاري إدخال البوت ${index}...`,
-          ephemeral: true
-        });
-
-        const success = await joinBot(index);
-
-        if (success) {
-          await interaction.editReply(
-            `✅ البوت ${index} دخل الروم الخاص فيه`
-          );
-        } else {
-          await interaction.editReply(
-            `❌ ما قدرت أدخل البوت ${index}`
-          );
-        }
-
+      if (!interaction.isChatInputCommand()) {
         return;
       }
+
+
+      const command = interaction.commandName;
+
+
+      // ------------------------------------------
+      // JOIN
+      // ------------------------------------------
+
+      const joinMatch = command.match(
+        /^join(1|2|3|4|5|6|7|8|9|10|11|12|13|14|15|16|17)$/
+      );
+
+
+      if (joinMatch) {
+
+        const index = Number(
+          joinMatch[1]
+        );
+
+
+        try {
+
+          await interaction.reply({
+
+            content:
+              `⏳ جاري إدخال البوت ${index}...`,
+
+            ephemeral: true
+
+          });
+
+
+          const success =
+            await joinBot(index);
+
+
+          if (success) {
+
+            await interaction.editReply({
+
+              content:
+                `✅ البوت ${index} دخل الروم الخاص فيه 🎧`
+
+            });
+
+          } else {
+
+            await interaction.editReply({
+
+              content:
+                `❌ ما قدرت أدخل البوت ${index}`
+
+            });
+
+          }
+
+        } catch (error) {
+
+          console.log(
+            `❌ خطأ في /join${index}:`,
+            error
+          );
+
+
+          if (
+            interaction.replied ||
+            interaction.deferred
+          ) {
+
+            await interaction.editReply({
+
+              content:
+                "❌ صار خطأ أثناء تنفيذ الأمر"
+
+            });
+
+          }
+
+        }
+
+
+        return;
+
+      }
+
+
+      // ------------------------------------------
+      // LEAVE
+      // ------------------------------------------
+
+      const leaveMatch = command.match(
+        /^leave(1|2|3|4|5|6|7|8|9|10|11|12|13|14|15|16|17)$/
+      );
+
 
       if (leaveMatch) {
-        const index = Number(leaveMatch[1]);
 
-        await interaction.reply({
-          content: `⏳ جاري إخراج البوت ${index}...`,
-          ephemeral: true
-        });
+        const index = Number(
+          leaveMatch[1]
+        );
 
-        const success = await leaveBot(index);
 
-        if (success) {
-          await interaction.editReply(
-            `✅ البوت ${index} خرج من الروم`
+        try {
+
+          await interaction.reply({
+
+            content:
+              `⏳ جاري إخراج البوت ${index}...`,
+
+            ephemeral: true
+
+          });
+
+
+          const success =
+            await leaveBot(index);
+
+
+          if (success) {
+
+            await interaction.editReply({
+
+              content:
+                `✅ البوت ${index} خرج من الروم 🚪`
+
+            });
+
+          } else {
+
+            await interaction.editReply({
+
+              content:
+                `❌ ما قدرت أخرج البوت ${index}`
+
+            });
+
+          }
+
+        } catch (error) {
+
+          console.log(
+            `❌ خطأ في /leave${index}:`,
+            error
           );
-        } else {
-          await interaction.editReply(
-            `❌ ما قدرت أخرج البوت ${index}`
-          );
+
+
+          if (
+            interaction.replied ||
+            interaction.deferred
+          ) {
+
+            await interaction.editReply({
+
+              content:
+                "❌ صار خطأ أثناء تنفيذ الأمر"
+
+            });
+
+          }
+
         }
 
-        return;
-      }
-    } catch (error) {
-      console.log("❌ Interaction error:", error);
 
-      if (interaction.replied || interaction.deferred) {
-        await interaction.editReply("❌ صار خطأ أثناء تنفيذ الأمر");
+        return;
+
       }
+
     }
-  });
+  );
+
 }
 
-console.log("🚀 AUREX 20 BOTS SYSTEM STARTED");
-console.log("🎧 الأوامر: /join1 إلى /join20");
-console.log("🚪 الأوامر: /leave1 إلى /leave20");
+
+// ==================================================
+// بدء النظام
+// ==================================================
+
+console.log("");
+console.log("=================================");
+console.log("🚀 AUREX 17 BOTS SYSTEM");
+console.log("=================================");
+console.log("🤖 البوتات: 1 - 17");
+console.log("🎧 الأوامر: /join1 - /join17");
+console.log("🚪 الأوامر: /leave1 - /leave17");
+console.log("=================================");
+console.log("");
+
+
+// تسجيل الأوامر بعد تشغيل البوتات
+setTimeout(() => {
+
+  registerCommands();
+
+}, 5000);
